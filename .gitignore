@@ -1,0 +1,82 @@
+# Entorno
+.env
+.env.local
+.env.*.local
+
+# Backend
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporales OCR
+backend/temp/
+backend/tmp/
+*.tiff
+*.tif
+
+# Archivos prueba
+backend/storage/documentos/*
+!backend/storage/documentos/.gitkeep
+
+# Logs
+*.log
+logs/
+backend/logs/
+
+# Frontend
+node_modules/
+jspm_packages/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+.npm
+.eslintcache
+.turbo/
+.vercel/
+.yarn/
+
+# Base de datos
+*.sql.gz
+*.dump
+database/backups/
+*.sqlite
+*.sqlite3
+*.db
+
+# Sistema
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.idea/
+*.swp
+*.swo
+
