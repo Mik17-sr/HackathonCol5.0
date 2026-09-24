@@ -28,7 +28,7 @@ class AppSettings:
     source_config: DataSourceConfig = field(
         default_factory=lambda: DataSourceConfig(
             provider="sample",
-            enable_external_sources=False,
+            enable_external_sources=True,
             database_url="sqlite:///./movete_cb.db",
         )
     )
@@ -123,7 +123,7 @@ def get_settings() -> AppSettings:
         source_config=DataSourceConfig(
             provider=os.getenv("DATA_PROVIDER", "sample"),
             data_dir=os.getenv("DATA_DIR", str(data_dir)),
-            enable_external_sources=os.getenv("ENABLE_EXTERNAL_SOURCES", "false").lower() == "true",
+            enable_external_sources=os.getenv("ENABLE_EXTERNAL_SOURCES", "true").lower() == "true",
             database_url=os.getenv("DATABASE_URL", "sqlite:///./movete_cb.db"),
             cache_ttl_seconds=int(os.getenv("OPEN_DATA_CACHE_TTL", "86400")),
             open_data_limit=int(os.getenv("OPEN_DATA_LIMIT", "500")),

@@ -16,6 +16,7 @@ from app.route_engine.graph_builder import GraphBuilder
 from app.services.open_data_service import fetch_estaciones_cable, fetch_paraderos_sitp, fetch_rutas_zonales
 from app.services.mobility_persistence import persist_open_data
 from app.models.parada import Parada
+from app.models.ruta import Ruta
 
 
 class GraphService:
@@ -93,6 +94,7 @@ class GraphService:
     def _build_local_database_graph(self) -> tuple[Graph, dict[str, dict[str, Any]]]:
         with SessionLocal() as db:
             records = db.query(Parada).filter(Parada.activo.is_(True)).all()
+            route_records = db.query(Ruta).filter(Ruta.activo.is_(True)).all()
         points = [
             {
                 "id": f"db:{record.codigo or record.id}",
@@ -108,7 +110,33 @@ class GraphService:
         ]
         if len(points) < 2:
             return self._build_fallback_graph(), {}
-        return self.build_graph_from_points(points), {point["id"]: point for point in points}
+        ordered_points = sorted(points, key=lambda point: (point["lat"], point["lng"]))
+        route_path = [(point["lat"], point["lng"]) for point in ordered_points]
+        routes = [
+            {
+                "id": route.codigo,
+                "name": f"{route.codigo} · {route.nombre}",
+                "mode": "sitp" if route.tipo in {"zonal", "troncal"} else route.tipo,
+                "paths": [route_path],
+            }
+            for route in route_records
+        ]
+        graph = self.build_graph_from_points(points, routes)
+        node_points = {point["id"]: point for point in points}
+        for route in routes:
+            for path_index, path in enumerate(route["paths"]):
+                for vertex_index, (lat, lng) in enumerate(path):
+                    node_id = f"route:{route['id']}:{path_index}:{vertex_index}"
+                    node_points[node_id] = {
+                        "id": node_id,
+                        "name": route["name"],
+                        "source_type": "ruta_zonal",
+                        "lat": lat,
+                        "lng": lng,
+                        "mode": route["mode"],
+                        "route_id": route["id"],
+                    }
+        return graph, node_points
 
     @staticmethod
     def build_graph_from_points(

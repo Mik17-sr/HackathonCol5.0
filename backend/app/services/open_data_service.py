@@ -59,31 +59,39 @@ async def resolve_dataset_resource(dataset_slug: str, timeout: float = 10.0) -> 
 
 async def fetch_arcgis_layer(
     layer_url: str,
-    limit: int = 20,
+    limit: int | None = 20,
     query: str | None = None,
     timeout: float = 10.0,
 ) -> list[dict[str, Any]]:
+    page_size = min(limit, 1000) if limit else 1000
     params: dict[str, Any] = {
         "where": "1=1",
         "outFields": "*",
         "returnGeometry": "true",
-        "resultRecordCount": limit,
+        "resultRecordCount": page_size,
+        "resultOffset": 0,
         "f": "json",
     }
     if query:
-        params["resultRecordCount"] = max(limit, 100)
+        params["resultRecordCount"] = page_size
 
     try:
         async with httpx.AsyncClient() as client:
             for attempt in range(3):
                 try:
-                    response = await client.get(f"{layer_url}/query", params=params, timeout=timeout)
-                    response.raise_for_status()
-                    payload = response.json()
-                    records = [
-                        {**feature.get("attributes", {}), "geometry": feature.get("geometry")}
-                        for feature in payload.get("features", [])
-                    ]
+                    records: list[dict[str, Any]] = []
+                    while True:
+                        response = await client.get(f"{layer_url}/query", params=params, timeout=timeout)
+                        response.raise_for_status()
+                        payload = response.json()
+                        page = [
+                            {**feature.get("attributes", {}), "geometry": feature.get("geometry")}
+                            for feature in payload.get("features", [])
+                        ]
+                        records.extend(page)
+                        if not page or len(page) < page_size or (limit and len(records) >= limit):
+                            break
+                        params["resultOffset"] += page_size
                     if query:
                         normalized_query = query.casefold()
                         records = [
@@ -91,7 +99,7 @@ async def fetch_arcgis_layer(
                             for record in records
                             if normalized_query in " ".join(str(value) for value in record.values()).casefold()
                         ]
-                    return records[:limit]
+                    return records[:limit] if limit else records
                 except (httpx.TimeoutException, httpx.NetworkError):
                     if attempt == 2:
                         raise
@@ -103,27 +111,36 @@ async def fetch_arcgis_layer(
 async def fetch_ckan_dataset(
     resource_id: str | None = None,
     query: str | None = None,
-    limit: int = 20,
+    limit: int | None = 20,
     timeout: float = 10.0,
 ) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {"limit": limit}
-
     if resource_id:
-        params["resource_id"] = resource_id
+        base_params = {"resource_id": resource_id}
+    else:
+        base_params = {}
     if query:
-        params["q"] = query
+        base_params["q"] = query
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(CKAN_BASE, params=params, timeout=timeout)
-            response.raise_for_status()
-            payload = response.json()
-            return payload.get("result", {}).get("records", [])
+            page_size = min(limit, 1000) if limit else 1000
+            records: list[dict[str, Any]] = []
+            offset = 0
+            while True:
+                params = {**base_params, "limit": page_size, "offset": offset}
+                response = await client.get(CKAN_BASE, params=params, timeout=timeout)
+                response.raise_for_status()
+                page = response.json().get("result", {}).get("records", [])
+                records.extend(page)
+                if not page or len(page) < page_size or (limit and len(records) >= limit):
+                    break
+                offset += page_size
+            return records[:limit] if limit else records
     except Exception:
         return []
 
 
-async def _fetch_estaciones_cable(limit: int = 20) -> list[dict[str, Any]]:
+async def _fetch_estaciones_cable(limit: int | None = 20) -> list[dict[str, Any]]:
     layer_url = await resolve_dataset_resource_url(DATASET_SLUGS["estaciones_cable"])
     if layer_url:
         return await fetch_arcgis_layer(layer_url=layer_url, limit=limit)
@@ -131,7 +148,7 @@ async def _fetch_estaciones_cable(limit: int = 20) -> list[dict[str, Any]]:
     return await fetch_ckan_dataset(resource_id=resource_id, limit=limit)
 
 
-async def _fetch_paraderos_sitp(limit: int = 20, query: str | None = None) -> list[dict[str, Any]]:
+async def _fetch_paraderos_sitp(limit: int | None = 20, query: str | None = None) -> list[dict[str, Any]]:
     layer_url = await resolve_dataset_resource_url(DATASET_SLUGS["paraderos_sitp"])
     if layer_url:
         return await fetch_arcgis_layer(layer_url=layer_url, limit=limit, query=query)
@@ -141,7 +158,7 @@ async def _fetch_paraderos_sitp(limit: int = 20, query: str | None = None) -> li
     return await fetch_ckan_dataset(resource_id=resource_id, query=query, limit=limit)
 
 
-async def _fetch_rutas_zonales(limit: int = 20, query: str | None = None) -> list[dict[str, Any]]:
+async def _fetch_rutas_zonales(limit: int | None = 20, query: str | None = None) -> list[dict[str, Any]]:
     layer_url = await resolve_dataset_resource_url(DATASET_SLUGS["rutas_zonales"])
     if layer_url:
         return await fetch_arcgis_layer(layer_url=layer_url, limit=limit, query=query)
@@ -151,19 +168,19 @@ async def _fetch_rutas_zonales(limit: int = 20, query: str | None = None) -> lis
     return await fetch_ckan_dataset(resource_id=resource_id, query=query, limit=limit)
 
 
-async def fetch_estaciones_cable(limit: int = 20) -> list[dict[str, Any]]:
+async def fetch_estaciones_cable(limit: int | None = 20) -> list[dict[str, Any]]:
     return await open_data_cache.get_or_set(
         f"estaciones_cable:{limit}", lambda: _fetch_estaciones_cable(limit)
     )
 
 
-async def fetch_paraderos_sitp(limit: int = 20, query: str | None = None) -> list[dict[str, Any]]:
+async def fetch_paraderos_sitp(limit: int | None = 20, query: str | None = None) -> list[dict[str, Any]]:
     return await open_data_cache.get_or_set(
         f"paraderos_sitp:{limit}:{query or ''}", lambda: _fetch_paraderos_sitp(limit, query)
     )
 
 
-async def fetch_rutas_zonales(limit: int = 20, query: str | None = None) -> list[dict[str, Any]]:
+async def fetch_rutas_zonales(limit: int | None = 20, query: str | None = None) -> list[dict[str, Any]]:
     return await open_data_cache.get_or_set(
         f"rutas_zonales:{limit}:{query or ''}", lambda: _fetch_rutas_zonales(limit, query)
     )
