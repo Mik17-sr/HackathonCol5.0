@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import math
+from typing import Any
+import asyncio
+from pathlib import Path
+
+import httpx
+
+from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.ingestion.normalizar_datos import normalize_point_records, normalize_route_records
+from app.integrations.datos_abiertos.gtfs_client import GTFSClient
+from app.route_engine.graph import Graph
+from app.route_engine.graph_builder import GraphBuilder
+from app.services.open_data_service import fetch_estaciones_cable, fetch_paraderos_sitp, fetch_rutas_zonales
+from app.services.mobility_persistence import persist_open_data
+from app.models.parada import Parada
+
+
+class GraphService:
+    """Servicio encargado de construir el grafo usando archivos GTFS o datos de prueba."""
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
+
+    def build_graph(self) -> Graph:
+        if self.settings.source_config.provider == "gtfs":
+            path = self.settings.source_config.gtfs_path
+            base_path = Path(path) if path else Path(self.settings.source_config.data_dir)
+            client = GTFSClient(base_path=str(base_path))
+            raw_records = client.fetch()
+            normalized = client.normalize(raw_records)
+            if not normalized:
+                return self._build_fallback_graph()
+            return GraphBuilder.from_records(normalized)
+
+        return self._build_fallback_graph()
+
+    async def build_open_data_graph(self, limit: int = 100) -> tuple[Graph, dict[str, dict[str, Any]]]:
+        if not self.settings.source_config.enable_external_sources:
+            return self._build_local_database_graph()
+
+        try:
+            estaciones, paradas, rutas = await asyncio.wait_for(
+                asyncio.gather(
+                    fetch_estaciones_cable(limit=limit),
+                    fetch_paraderos_sitp(limit=limit),
+                    fetch_rutas_zonales(limit=limit),
+                ),
+                timeout=25,
+            )
+        except (asyncio.TimeoutError, httpx.HTTPError):
+            return self._build_local_database_graph()
+        points = normalize_point_records(
+            estaciones,
+            source_type="estacion",
+            source_crs=self.settings.source_config.source_crs,
+            target_crs=self.settings.source_config.target_crs,
+        )
+        points.extend(
+            normalize_point_records(
+                paradas,
+                source_type="parada",
+                source_crs=self.settings.source_config.source_crs,
+                target_crs=self.settings.source_config.target_crs,
+            )
+        )
+        normalized_routes = normalize_route_records(
+            rutas,
+            source_crs=self.settings.source_config.source_crs,
+            target_crs=self.settings.source_config.target_crs,
+        )
+        if points or normalized_routes:
+            persist_open_data(points, normalized_routes)
+        if len(points) < 2 and not normalized_routes:
+            return self._build_fallback_graph(), {}
+        node_points = {point["id"]: point for point in points}
+        for route in normalized_routes:
+            for path_index, path in enumerate(route["paths"]):
+                for vertex_index, (lat, lng) in enumerate(path):
+                    node_points[f"route:{route['id']}:{path_index}:{vertex_index}"] = {
+                        "id": f"route:{route['id']}:{path_index}:{vertex_index}",
+                        "name": route["name"],
+                        "source_type": "ruta_zonal",
+                        "lat": lat,
+                        "lng": lng,
+                        "mode": route.get("mode", "sitp"),
+                        "route_id": route["id"],
+                    }
+        return self.build_graph_from_points(points, normalized_routes), node_points
+
+    def _build_local_database_graph(self) -> tuple[Graph, dict[str, dict[str, Any]]]:
+        with SessionLocal() as db:
+            records = db.query(Parada).filter(Parada.activo.is_(True)).all()
+        points = [
+            {
+                "id": f"db:{record.codigo or record.id}",
+                "name": record.nombre,
+                "source_type": "parada",
+                "lat": record.lat,
+                "lng": record.lng,
+                "mode": record.tipo or "sitp",
+                "status": "normal",
+                "raw": {},
+            }
+            for record in records
+        ]
+        if len(points) < 2:
+            return self._build_fallback_graph(), {}
+        return self.build_graph_from_points(points), {point["id"]: point for point in points}
+
+    @staticmethod
+    def build_graph_from_points(
+        points: list[dict[str, Any]],
+        routes: list[dict[str, Any]] | None = None,
+        neighbors: int = 3,
+    ) -> Graph:
+        graph = Graph()
+        for point in points:
+            graph.add_node(str(point["id"]))
+
+        for point in points:
+            candidates = sorted(
+                (
+                    (haversine_km(point["lat"], point["lng"], other["lat"], other["lng"]), other)
+                    for other in points
+                    if other["id"] != point["id"]
+                ),
+                key=lambda item: item[0],
+            )[:neighbors]
+            for distance, other in candidates:
+                duration = max(1, round(distance / 5 * 60))
+                graph.add_connection(
+                    str(point["id"]),
+                    str(other["id"]),
+                    duration=duration,
+                    cost=0,
+                    distance=distance,
+                    walking=distance,
+                    wait=0,
+                    transfers=0,
+                    reliability=0.95,
+                    accessibility=0.8,
+                    status="normal",
+                    mode="caminata",
+                )
+
+        GraphService._add_route_edges(graph, points, routes or [])
+
+        # Ensure isolated geographic clusters remain reachable by Dijkstra.
+        ordered_points = sorted(points, key=lambda point: (point["lat"], point["lng"]))
+        for point, other in zip(ordered_points, ordered_points[1:]):
+            distance = haversine_km(point["lat"], point["lng"], other["lat"], other["lng"])
+            duration = max(1, round(distance / 5 * 60))
+            for source, destination in ((point, other), (other, point)):
+                graph.add_connection(
+                    str(source["id"]),
+                    str(destination["id"]),
+                    duration=duration,
+                    cost=0,
+                    distance=distance,
+                    walking=distance,
+                    wait=0,
+                    transfers=0,
+                    reliability=0.95,
+                    accessibility=0.8,
+                    status="normal",
+                    mode="caminata",
+                )
+        return graph
+
+    @staticmethod
+    def _add_route_edges(
+        graph: Graph,
+        points: list[dict[str, Any]],
+        routes: list[dict[str, Any]],
+    ) -> None:
+        point_nodes = [(str(point["id"]), point["lat"], point["lng"]) for point in points]
+        for route in routes:
+            for path_index, path in enumerate(route["paths"]):
+                route_nodes: list[str] = []
+                for vertex_index, (lat, lng) in enumerate(path):
+                    node_id = f"route:{route['id']}:{path_index}:{vertex_index}"
+                    graph.add_node(node_id)
+                    route_nodes.append(node_id)
+                    if vertex_index:
+                        previous_lat, previous_lng = path[vertex_index - 1]
+                        distance = haversine_km(previous_lat, previous_lng, lat, lng)
+                        duration = max(1, round(distance / 25 * 60))
+                        for source, destination in ((route_nodes[-2], node_id), (node_id, route_nodes[-2])):
+                            graph.add_connection(
+                                source,
+                                destination,
+                                duration=duration,
+                                cost=2950,
+                                distance=distance,
+                                walking=0,
+                                wait=max(1, round((route.get("frequency_min") or 4) / 2)),
+                                transfers=0,
+                                reliability=0.9,
+                                accessibility=0.8,
+                                status="normal",
+                                mode=route.get("mode", "sitp"),
+                                route_id=str(route["id"]),
+                            )
+
+                for point_id, point_lat, point_lng in point_nodes:
+                    nearest_index = min(
+                        range(len(path)),
+                        key=lambda index: haversine_km(point_lat, point_lng, path[index][0], path[index][1]),
+                    )
+                    distance = haversine_km(point_lat, point_lng, path[nearest_index][0], path[nearest_index][1])
+                    if distance > 0.5:
+                        continue
+                    route_node = route_nodes[nearest_index]
+                    duration = max(1, round(distance / 5 * 60))
+                    for source, destination in ((point_id, route_node), (route_node, point_id)):
+                        graph.add_connection(
+                            source,
+                            destination,
+                            duration=duration,
+                            cost=0,
+                            distance=distance,
+                            walking=distance,
+                            wait=0,
+                            transfers=0,
+                            reliability=0.9,
+                            accessibility=0.8,
+                            status="normal",
+                            mode="caminata",
+                        )
+
+    @staticmethod
+    def nearest_point(points: dict[str, dict[str, Any]], lat: float, lng: float) -> str:
+        if not points:
+            raise ValueError("No hay puntos de transporte disponibles")
+        return min(
+            points,
+            key=lambda point_id: haversine_km(lat, lng, points[point_id]["lat"], points[point_id]["lng"]),
+        )
+
+    def _build_fallback_graph(self) -> Graph:
+        return GraphBuilder.from_records(self.settings.default_graph_records)
+
+
+def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    radius_km = 6371.0
+    lat_delta = math.radians(lat2 - lat1)
+    lng_delta = math.radians(lng2 - lng1)
+    value = (
+        math.sin(lat_delta / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(lng_delta / 2) ** 2
+    )
+    return radius_km * 2 * math.asin(math.sqrt(value))
