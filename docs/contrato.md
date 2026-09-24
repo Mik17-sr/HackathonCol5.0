@@ -2,7 +2,7 @@
 
 ## 0. Contexto y Alcance (Fases Iniciales)
 
-**⚠️ IMPORTANTE PARA EL EQUIPO:** 
+**IMPORTANTE PARA EL EQUIPO:** 
 Este documento define la estructura de comunicación (JSON) estricta **únicamente para las primeras etapas del desarrollo (Fase MVP)**. 
 
 El objetivo de este contrato es **desbloquear el trabajo en paralelo**. Al tener esta estructura acordada desde el día uno:
