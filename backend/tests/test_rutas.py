@@ -53,25 +53,64 @@ def test_fuentes_activas_endpoint():
 
 
 def test_calcular_ruta_usa_grafo_normalizado(monkeypatch):
-    points = {
-        "A": {"id": "A", "name": "Origen", "lat": 4.6000, "lng": -74.1000, "source_type": "parada"},
-        "B": {"id": "B", "name": "Destino", "lat": 4.6050, "lng": -74.1000, "source_type": "parada"},
-    }
+    """El endpoint delega al StopRouter y devuelve status=success."""
+    from app.route_engine.stop_router import StopRouter, RouteResult, Segment
+    from app.route_engine.stop_graph import DerivedStop, StopNetwork
+    from app.route_engine.graph import Graph
 
-    async def fake_open_data_graph(self, limit=100):
-        return GraphService.build_graph_from_points(list(points.values())), points
+    # Construir una red mínima con dos paradas y una arista de bus
+    stop_a = DerivedStop(
+        id="S1", lat=4.6000, lng=-74.1000, name="Parada A", route_ids={"R1"}
+    )
+    stop_b = DerivedStop(
+        id="S2", lat=4.6050, lng=-74.1000, name="Parada B", route_ids={"R1"}
+    )
+    graph = Graph()
+    graph.add_connection(
+        "S1", "S2",
+        duration=5, cost=2950, distance=0.6, walking=0,
+        wait=5, transfers=0, reliability=0.9, accessibility=0.8,
+        status="normal", mode="sitp", route_id="R1",
+    )
+    graph.add_connection(
+        "S2", "S1",
+        duration=5, cost=2950, distance=0.6, walking=0,
+        wait=5, transfers=0, reliability=0.9, accessibility=0.8,
+        status="normal", mode="sitp", route_id="R1",
+    )
 
-    monkeypatch.setattr(GraphService, "build_open_data_graph", fake_open_data_graph)
+    net = StopNetwork(
+        stops={"S1": stop_a, "S2": stop_b},
+        routes={
+            "R1": {
+                "id": "R1", "name": "Ruta Test", "mode": "sitp",
+                "paths": [[(4.6000, -74.1000), (4.6025, -74.1000), (4.6050, -74.1000)]],
+                "raw": {"cod_linea": "R1", "orig_ruta": "Parada A", "dest_ruta": "Parada B"},
+            }
+        },
+        graph=graph,
+    )
+    stop_a.raw_vertex_index["R1"] = 0
+    stop_b.raw_vertex_index["R1"] = 2
+
+    async def fake_get_stop_router(self, limit=100):
+        return StopRouter(net)
+
+    monkeypatch.setattr(GraphService, "get_stop_router", fake_get_stop_router)
+
     response = TestClient(app).post(
         "/api/v1/rutas/calcular",
         json={
-            "origen": {"lat": 4.6000, "lng": -74.1000},
-            "destino": {"lat": 4.6050, "lng": -74.1000},
+            # Origen: ~500 m al sur de S1 (4.6000 - 0.0045 ≈ 500 m)
+            # Destino: ~500 m al norte de S2 (4.6050 + 0.0045 ≈ 500 m)
+            # Distancia total ≈ 1.4 km > DIRECT_WALK_KM → busca bus
+            "origen": {"lat": 4.5955, "lng": -74.1000},
+            "destino": {"lat": 4.6095, "lng": -74.1000},
         },
     )
 
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["status"] == "success"
-    assert data["ruta"]["path"] == ["A", "B"]
-    assert data["ruta"]["legs"]
+    assert "segments" in data
+    assert any(s["type"] == "BUS" for s in data["segments"])

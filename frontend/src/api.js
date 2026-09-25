@@ -43,13 +43,28 @@ export function recomendarRuta(mensaje, locations = {}) {
   })
 }
 
+/**
+ * Carga los nodos del grafo local de Ciudad Bolívar.
+ * Siempre responde en < 50 ms — no depende de API externa.
+ * Úsala como fallback garantizado cuando /paradas falla.
+ */
+export function cargarParadasLocal() {
+  return request('/api/v1/paradas/local').then((response) => response.data || [])
+}
+
 export function cargarMapa() {
-  return Promise.all([
-    request('/api/v1/paradas?limit=100'),
-    request('/api/v1/estaciones?limit=100'),
-  ]).then(([stops, stations]) => ({
-    stops: stops.data || [],
-    stations: stations.data || [],
+  // Intentar la API externa primero; si falla, usar el grafo local.
+  const stopsPromise = request('/api/v1/paradas?limit=100')
+    .then((r) => r.data || [])
+    .catch(() => cargarParadasLocal())
+
+  const stationsPromise = request('/api/v1/estaciones?limit=100')
+    .then((r) => r.data || [])
+    .catch(() => [])
+
+  return Promise.all([stopsPromise, stationsPromise]).then(([stops, stations]) => ({
+    stops,
+    stations,
   }))
 }
 

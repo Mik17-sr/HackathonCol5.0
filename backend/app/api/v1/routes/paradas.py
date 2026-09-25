@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from app.ingestion.normalizar_datos import normalize_route_records, route_vertex_records
+from app.services.local_graph import get_local_nodes
 from app.services.open_data_service import fetch_rutas_zonales
 
 router = APIRouter(prefix="/api/v1", tags=["paradas"])
@@ -27,11 +28,39 @@ def normalize_stop(record: dict[str, Any], index: int) -> dict[str, Any] | None:
     }
 
 
+@router.get("/paradas/local")
+async def listar_paradas_local() -> dict[str, Any]:
+    """
+    Devuelve los nodos del grafo local de Ciudad Bolívar.
+    Esta ruta SIEMPRE responde en < 50 ms y no depende de ninguna API externa.
+    El frontend la usa como fallback garantizado para poblar el mapa inicial.
+    """
+    nodes = get_local_nodes()
+    data = [
+        {
+            "id": node["id"],
+            "nombre": node["name"],
+            "codigo": node["id"],
+            "lat": node["lat"],
+            "lng": node["lng"],
+            "localidad": "Ciudad Bolívar",
+            "tipo": node["source_type"],
+            "estado": "normal",
+        }
+        for node in nodes
+    ]
+    return {"status": "success", "count": len(data), "data": data}
+
+
 @router.get("/paradas")
 async def listar_paradas(
     limit: int | None = Query(None, ge=1, le=100000),
     query: str | None = None,
 ) -> dict[str, Any]:
+    """
+    Intenta obtener paradas desde la API de Transmilenio.
+    Si no hay datos disponibles, devuelve los nodos del grafo local.
+    """
     records = await fetch_rutas_zonales(limit=None, query=query)
     routes = normalize_route_records(records)
     data = [
@@ -48,12 +77,23 @@ async def listar_paradas(
         for point in route_vertex_records(routes, max_points=limit)
     ]
     if not data:
-        return {
-            "status": "fallback",
-            "count": 0,
-            "data": [],
-            "detail": "No se encontraron paraderos disponibles en la fuente pública.",
-        }
+        # Fallback garantizado: nodos del grafo local
+        local_nodes = get_local_nodes()
+        data = [
+            {
+                "id": node["id"],
+                "nombre": node["name"],
+                "codigo": node["id"],
+                "lat": node["lat"],
+                "lng": node["lng"],
+                "localidad": "Ciudad Bolívar",
+                "tipo": node["source_type"],
+                "estado": "normal",
+            }
+            for node in local_nodes
+        ]
+        return {"status": "fallback", "count": len(data), "data": data}
+
     return {"status": "success", "count": len(data), "data": data}
 
 

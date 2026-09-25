@@ -1,7 +1,9 @@
+import pytest
+
 from app.route_engine.dijkstra import dijkstra_shortest_path
 from app.route_engine.graph import Graph
 from app.services.graph_service import GraphService
-from app.api.v1.routes.rutas import walking_route
+from app.route_engine.stop_router import StopRouter
 
 
 def test_dijkstra_shortest_path():
@@ -85,8 +87,11 @@ def test_dijkstra_can_block_a_service_for_an_alternative():
 
 
 def test_short_distance_can_be_represented_as_walking_route():
-    result = walking_route("A", "B", 0.8)
+    result = StopRouter._walk_only_result(4.6000, -74.1000, 4.6050, -74.1000, 0.8)
 
-    assert result["total_cost"] == 0
-    assert result["transfers"] == 0
-    assert result["legs"][0]["modo"] == "caminata"
+    assert result.found is True
+    assert result.total_distance_km == pytest.approx(0.8, abs=0.01)
+    assert result.walking_distance_km == pytest.approx(0.8, abs=0.01)
+    assert result.bus_distance_km == 0.0
+    assert result.transfers == 0
+    assert result.segments[0].type == "WALK"

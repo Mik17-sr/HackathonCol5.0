@@ -228,12 +228,31 @@ function PlannerView({ origin, destination, setOrigin, setDestination, selectedR
   }
 
   useEffect(() => {
-    cargarMapa().then(({ stops }) => {
-      const availableOrigin = stops.find((stop) => stop.nombre === 'Vista Hermosa') || stops[0]
-      const availableDestinations = stops.filter((stop) => stop.id !== availableOrigin?.id)
-      setOrigin(availableOrigin || null)
-      setDestination(availableDestinations[0] || null)
-    }).catch(() => setRouteError('No pudimos cargar los destinos del backend.'))
+    // Coordenadas de Ciudad Bolívar como último recurso (sin depender del backend)
+    const DEFAULT_ORIGIN = { lat: 4.5684, lng: -74.1502, nombre: 'Vista Hermosa', id: 'local:vista_hermosa' }
+    const DEFAULT_DESTINATION = { lat: 4.5802, lng: -74.1496, nombre: 'TransMiCable · Mirador del Paraíso', id: 'local:cable_mirador' }
+
+    cargarMapa()
+      .then(({ stops }) => {
+        if (!stops || stops.length === 0) {
+          setOrigin(DEFAULT_ORIGIN)
+          setDestination(DEFAULT_DESTINATION)
+          return
+        }
+        const availableOrigin =
+          stops.find((s) => s.nombre === 'Vista Hermosa') ||
+          stops.find((s) => s.id === 'local:vista_hermosa') ||
+          stops[0]
+        const availableDestinations = stops.filter((s) => s.id !== availableOrigin?.id)
+        setOrigin(availableOrigin || DEFAULT_ORIGIN)
+        setDestination(availableDestinations[0] || DEFAULT_DESTINATION)
+      })
+      .catch(() => {
+        // Si falla cualquier llamada al backend, usar coordenadas predefinidas.
+        // No mostrar error — el usuario todavía puede calcular rutas manualmente.
+        setOrigin(DEFAULT_ORIGIN)
+        setDestination(DEFAULT_DESTINATION)
+      })
   }, [setDestination, setOrigin])
 
   const displayedRoutes = routeResult
