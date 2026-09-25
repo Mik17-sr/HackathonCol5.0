@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
-from app.core.config import get_settings
-from app.core.database import SessionLocal
-from app.models.parada import Parada
-from app.services.open_data_service import fetch_paraderos_sitp
+from app.ingestion.normalizar_datos import normalize_route_records, route_vertex_records
+from app.services.open_data_service import fetch_rutas_zonales
 
 router = APIRouter(prefix="/api/v1", tags=["paradas"])
 
@@ -31,32 +29,24 @@ def normalize_stop(record: dict[str, Any], index: int) -> dict[str, Any] | None:
 
 @router.get("/paradas")
 async def listar_paradas(
-    limit: int = Query(20, ge=1, le=5000),
+    limit: int | None = Query(None, ge=1, le=100000),
     query: str | None = None,
 ) -> dict[str, Any]:
-    if not get_settings().source_config.enable_external_sources:
-        with SessionLocal() as db:
-            query_builder = db.query(Parada).filter(Parada.activo.is_(True))
-            if query:
-                query_builder = query_builder.filter(Parada.nombre.ilike(f"%{query}%"))
-            records = query_builder.limit(limit).all()
-        data = [
-            {
-                "id": str(record.id),
-                "nombre": record.nombre,
-                "codigo": record.codigo,
-                "lat": record.lat,
-                "lng": record.lng,
-                "localidad": record.zona,
-                "tipo": "parada",
-                "estado": "normal",
-            }
-            for record in records
-        ]
-        return {"status": "local", "count": len(data), "data": data}
-
-    records = await fetch_paraderos_sitp(limit=limit, query=query)
-    data = [item for index, record in enumerate(records) if (item := normalize_stop(record, index))]
+    records = await fetch_rutas_zonales(limit=None, query=query)
+    routes = normalize_route_records(records)
+    data = [
+        {
+            "id": point["id"],
+            "nombre": point["name"],
+            "codigo": point["route_id"],
+            "lat": point["lat"],
+            "lng": point["lng"],
+            "localidad": None,
+            "tipo": point["source_type"],
+            "estado": point["status"],
+        }
+        for point in route_vertex_records(routes, max_points=limit)
+    ]
     if not data:
         return {
             "status": "fallback",
@@ -69,7 +59,4 @@ async def listar_paradas(
 
 @router.get("/paradas/ciudad-bolivar")
 async def listar_paradas_ciudad_bolivar(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
-    records = await fetch_paraderos_sitp(limit=limit, query="Ciudad Bolívar")
-    if not records:
-        raise HTTPException(status_code=503, detail="No se pudo consultar la fuente pública de paraderos.")
-    return {"status": "success", "count": len(records), "data": records}
+    return await listar_paradas(limit=limit, query="Ciudad Bolívar")

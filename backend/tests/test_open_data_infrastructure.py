@@ -1,6 +1,6 @@
 import asyncio
 
-from app.ingestion.normalizar_datos import normalize_point_records, normalize_route_records
+from app.ingestion.normalizar_datos import normalize_point_records, normalize_route_records, simplify_route_records
 from app.services.open_data_cache import OpenDataCache
 
 
@@ -46,3 +46,12 @@ def test_open_data_cache_loads_each_key_once():
 
     assert calls == 1
     assert values == [{"value": 1}, {"value": 1}]
+
+
+def test_route_simplification_preserves_endpoints():
+    route = {"id": "C1", "paths": [[(4.5, -74.2) for _ in range(200)]]}
+    simplified = simplify_route_records([route], max_vertices=20)
+
+    assert len(simplified[0]["paths"][0]) == 20
+    assert simplified[0]["paths"][0][0] == route["paths"][0][0]
+    assert simplified[0]["paths"][0][-1] == route["paths"][0][-1]

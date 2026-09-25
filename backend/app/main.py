@@ -28,7 +28,6 @@ Base.metadata.create_all(bind=engine)
 with SessionLocal() as db:
     loader = DatasetLoader(db)
     loader.ensure_default_sources()
-    loader.seed_sample_transport_data()
 
 app.include_router(chat_router)
 app.include_router(rutas_router)

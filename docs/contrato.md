@@ -1,5 +1,9 @@
 # Contrato de API - Muévete CB
 
+## Fuente de datos
+
+Todos los datos de transporte usados por rutas, mapa, horarios, estado de la fuente y cálculo de recorridos provienen exclusivamente de la capa 15 del FeatureServer de planificación SITP de TransMilenio, consultada como GeoJSON con `outSR=4326` y filtrada a Ciudad Bolívar (`loc_orig = 19 OR loc_dest = 19`). No se combinan fuentes CKAN, GTFS ni datasets alternos. Las estaciones independientes no forman parte de esa capa y se devuelven como colección vacía.
+
 ## 0. Contexto y Alcance (Fases Iniciales)
 
 *IMPORTANTE PARA EL EQUIPO:* 

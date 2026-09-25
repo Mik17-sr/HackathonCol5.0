@@ -3,7 +3,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import './App.css'
 import { useDarkMode } from './useDarkMode'
-import { buscarDireccion, calcularRuta, cargarGoogleMapsPlaces, cargarMapa, cargarRutasMapa, recomendarRuta } from './api'
+import { buscarDireccion, calcularRuta, cargarGoogleMapsPlaces, cargarMapa, recomendarRuta } from './api'
 
 const savedPlaces = [
   { icon: '⌂', name: 'Casa', address: 'Vista Hermosa, Bogotá', tone: 'lime' },
@@ -41,18 +41,23 @@ const initialBusSchedules = [
   { id: 'schedule-office', route: 'SITP 6-4 + TransMi', origin: 'Vista Hermosa', destination: 'Chapinero', departure: '07:05', arrival: '07:57', reminder: 15, tone: 'sky' },
 ]
 
-function toVisualRoute(route) {
+function toVisualRoute(route, index = 0, serviceGroups = []) {
   const serviceLegs = (route.legs || []).filter((leg) => leg.modo !== 'caminata')
   const services = [...new Set(serviceLegs.map((leg) => leg.route_id).filter(Boolean))]
-  const transfers = Math.max(0, serviceLegs.length - 1)
+  const transfers = Math.max(
+    Number.isFinite(Number(route.transfers)) ? Number(route.transfers) : 0,
+    Math.max(0, services.length - 1),
+  )
   return {
-    id: 'api-route',
-    label: serviceLegs.length ? 'Ruta recomendada' : 'Ruta caminando',
-    title: services.length ? services.join(' + ') : 'Conexión más cercana',
+    id: `api-route-${index}`,
+    label: index === 0 ? 'Ruta recomendada' : `Alternativa ${index}`,
+    title: services.length ? services.join(' + ') : 'Trayecto a pie',
+    services,
+    serviceGroups,
     time: `${route.total_time} min`,
     detail: `${services.length ? `Bus ${services.join(' + ')} · ` : ''}${transfers} transbordos · ${Number(route.walking || 0).toFixed(1)} km caminando`,
     tone: 'lime',
-    icon: '↗',
+    icon: services.length ? '🚌' : '🚶',
     incidence: Math.round((1 - Number(route.reliability || 0)) * 100),
     coordinates: (route.coordinates || []).map((point) => [point.lat, point.lng]),
   }
@@ -214,7 +219,7 @@ function PlannerView({ origin, destination, setOrigin, setDestination, selectedR
         { lat: Number(destinationPoint.lat), lng: Number(destinationPoint.lng) },
       )
       setRouteResult(result)
-      setSelectedRoute(toVisualRoute(result.ruta))
+      setSelectedRoute(toVisualRoute(result.ruta, 0, result.grupos_servicios || []))
     } catch (error) {
       setRouteError(error.message || 'No pudimos calcular la ruta. Revisa que el backend este activo.')
     } finally {
@@ -231,7 +236,9 @@ function PlannerView({ origin, destination, setOrigin, setDestination, selectedR
     }).catch(() => setRouteError('No pudimos cargar los destinos del backend.'))
   }, [setDestination, setOrigin])
 
-  const displayedRoutes = routeResult ? [toVisualRoute(routeResult.ruta)] : []
+  const displayedRoutes = routeResult
+    ? (routeResult.alternativas || [routeResult.ruta]).slice(0, 3).map((route, index) => toVisualRoute(route, index, routeResult.grupos_servicios || []))
+    : []
   const routeTime = routeResult ? `${routeResult.ruta.total_time} min` : 'Calculando...'
 
   return (
@@ -321,36 +328,10 @@ function MapStage({ routeResult, selectedRoute, origin, destination, locationMod
 
     const stopsLayer = L.layerGroup().addTo(map)
     const stationsLayer = L.layerGroup().addTo(map)
-    const routesLayer = L.layerGroup().addTo(map)
     const calculatedRouteLayer = L.layerGroup().addTo(map)
     locationsLayerRef.current = L.layerGroup().addTo(map)
     calculatedRouteLayerRef.current = calculatedRouteLayer
-    L.control.layers({ Calles: streets, Satélite: satellite }, { Paraderos: stopsLayer, Estaciones: stationsLayer, 'Rutas zonales': routesLayer }, { position: 'topright' }).addTo(map)
-
-    function drawRoutes(routes) {
-      const routeBounds = []
-      routes.forEach((route) => route.paths.forEach((path) => {
-        if (path.length < 2) return
-        path.forEach((point) => routeBounds.push(point))
-        L.polyline(path, { color: '#e8794f', weight: 7, opacity: .22, lineCap: 'round', lineJoin: 'round' }).addTo(routesLayer)
-        L.polyline(path, { color: route.modo === 'troncal' ? '#287b78' : '#769d45', weight: 4, opacity: .95, lineCap: 'round', lineJoin: 'round' })
-          .bindTooltip(`${route.nombre} · ${route.modo || 'SITP'}`)
-          .on('click', () => onSelectRouteRef.current({
-            id: `zonal-${route.id}`,
-            label: 'Ruta real',
-            title: route.nombre,
-            time: 'En trazado',
-            detail: `${route.modo || 'SITP'} · ${path.length} puntos del recorrido`,
-            tone: 'sky',
-            icon: '→',
-            incidence: 0,
-            coordinates: path,
-          }))
-          .addTo(routesLayer)
-      }))
-      if (routeBounds.length) map.fitBounds(routeBounds, { padding: [30, 30], maxZoom: 14 })
-      setMapStatus(`${routes.length} rutas SITP · ${routeBounds.length} puntos`) 
-    }
+    L.control.layers({ Calles: streets, Satélite: satellite }, { Paraderos: stopsLayer, Estaciones: stationsLayer }, { position: 'topright' }).addTo(map)
 
     cargarMapa().then(({ stops, stations }) => {
       const bounds = []
@@ -371,7 +352,6 @@ function MapStage({ routeResult, selectedRoute, origin, destination, locationMod
       if (bounds.length) map.fitBounds(bounds, { padding: [20, 20], maxZoom: 14 })
       setMapStatus(`${stops.length} paraderos · ${stations.length} estaciones`)
     }).catch(() => setMapStatus('Mapa disponible; paraderos no disponibles'))
-    cargarRutasMapa().then(drawRoutes).catch(() => setMapStatus('Rutas SITP no disponibles'))
 
     return () => map.remove()
   }, [])
@@ -399,11 +379,12 @@ function MapStage({ routeResult, selectedRoute, origin, destination, locationMod
     }
   }, [origin, destination, selectedRoute, routeResult])
 
-  return <div className="map-stage real-map-stage"><div className="map-location-tools" role="group" aria-label="Elegir punto en el mapa" onClick={(event) => event.stopPropagation()}><span>Elegir en mapa:</span><button className={locationMode === 'origin' ? 'active' : ''} type="button" onClick={() => onLocationModeChange('origin')}>Origen</button><button className={locationMode === 'destination' ? 'active' : ''} type="button" onClick={() => onLocationModeChange('destination')}>Destino</button></div><div ref={containerRef} className="real-map" aria-label="Mapa real de paraderos, estaciones y rutas zonales" /><span className="real-map-status">{mapStatus}</span></div>
+  return <div className="map-stage real-map-stage"><div className="map-location-tools" role="group" aria-label="Elegir punto en el mapa" onClick={(event) => event.stopPropagation()}><span>Elegir en mapa:</span><button className={locationMode === 'origin' ? 'active' : ''} type="button" onClick={() => onLocationModeChange('origin')}>Origen</button><button className={locationMode === 'destination' ? 'active' : ''} type="button" onClick={() => onLocationModeChange('destination')}>Destino</button></div><div ref={containerRef} className="real-map" aria-label="Mapa de tu recorrido y puntos de referencia" /><span className="real-map-status">{mapStatus}</span></div>
 }
 
 function RouteCard({ route, selected, onSelect }) {
-  return <button className={`group route-card transition-all duration-300 ease-out hover:-translate-y-1 ${selected ? 'selected' : ''}`} type="button" onClick={() => onSelect(route)}><span className={`route-symbol transition-transform duration-300 group-hover:scale-110 ${route.tone}`}>{route.icon}</span><span className="route-info"><span className="route-label">{route.label}</span><strong>{route.title}</strong><small>{route.detail}</small></span><span className="route-time">{route.time}<b>›</b></span><span className="route-incidence"><i style={{ '--incidence': `${route.incidence * 2}%` }} />{route.incidence}% incidencia</span></button>
+  const options = route.serviceGroups?.flatMap((group) => group.opciones || []) || []
+  return <button className={`group route-card transition-all duration-300 ease-out hover:-translate-y-1 ${selected ? 'selected' : ''}`} type="button" onClick={() => onSelect(route)}><span className={`route-symbol transition-transform duration-300 group-hover:scale-110 ${route.tone}`}>{route.icon}</span><span className="route-info"><span className="route-label">{route.label}</span><strong>{route.title}</strong><span className="route-services">{route.services.length ? route.services.map((service) => <b key={service}>🚌 {service}</b>) : <b>🚶 Caminata</b>}</span><small>{route.detail}</small>{options.length > 1 && <small className="route-options-note">Puedes tomar cualquiera: {options.join(' / ')}</small>}</span><span className="route-time">{route.time}<b>›</b></span><span className="route-incidence"><i style={{ '--incidence': `${route.incidence * 2}%` }} />{route.incidence}% incidencia</span></button>
 }
 
 function AccidentsModule({ selectedRoute }) {

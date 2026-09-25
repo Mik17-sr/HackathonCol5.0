@@ -45,7 +45,7 @@ export function recomendarRuta(mensaje, locations = {}) {
 
 export function cargarMapa() {
   return Promise.all([
-    request('/api/v1/paradas?limit=5000'),
+    request('/api/v1/paradas?limit=100'),
     request('/api/v1/estaciones?limit=100'),
   ]).then(([stops, stations]) => ({
     stops: stops.data || [],

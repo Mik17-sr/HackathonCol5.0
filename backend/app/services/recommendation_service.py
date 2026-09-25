@@ -1,15 +1,16 @@
+from fastapi import HTTPException
+
 from app.core.config import get_settings
 from app.route_engine.dijkstra import dijkstra_shortest_path
 from app.route_engine.graph import Graph
 from app.schemas.chat import RecomendacionRequest, RecomendacionResponse, RutaAlternativa
-from app.services.graph_service import GraphService
+from app.services.graph_service import GraphService, haversine_km
 
 
 class RecommendationService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.graph_service = GraphService()
-        self.graph: Graph = self.graph_service.build_graph()
 
     async def create_recommendation(self, payload: RecomendacionRequest) -> RecomendacionResponse:
         origin = self.settings.default_origin
@@ -17,22 +18,32 @@ class RecommendationService:
         route = None
         point_names: dict[str, str] = {}
 
-        if payload.contexto.destino is not None:
-            open_graph, points = await self.graph_service.build_open_data_graph(limit=100)
-            if points:
-                origin_id = self.graph_service.nearest_point(
-                    points, payload.contexto.ubicacion_actual.lat, payload.contexto.ubicacion_actual.lng
-                )
+        open_graph, points = await self.graph_service.build_open_data_graph(limit=100)
+        if points:
+            origin_id = self.graph_service.nearest_point(
+                points, payload.contexto.ubicacion_actual.lat, payload.contexto.ubicacion_actual.lng
+            )
+            if payload.contexto.destino is not None:
                 destination_id = self.graph_service.nearest_point(
                     points, payload.contexto.destino.lat, payload.contexto.destino.lng
                 )
-                route = dijkstra_shortest_path(open_graph, origin_id, destination_id)
-                origin = points[origin_id]["name"]
-                destination = points[destination_id]["name"]
-                point_names = {point_id: point["name"] for point_id, point in points.items()}
+            else:
+                destination_id = max(
+                    points,
+                    key=lambda point_id: haversine_km(
+                        points[origin_id]["lat"],
+                        points[origin_id]["lng"],
+                        points[point_id]["lat"],
+                        points[point_id]["lng"],
+                    ),
+                )
+            route = dijkstra_shortest_path(open_graph, origin_id, destination_id)
+            origin = points[origin_id]["name"]
+            destination = points[destination_id]["name"]
+            point_names = {point_id: point["name"] for point_id, point in points.items()}
 
         if route is None:
-            route = dijkstra_shortest_path(self.graph, origin, destination)
+            raise HTTPException(status_code=503, detail="La fuente oficial no tiene rutas disponibles.")
 
         path_names = [point_names.get(node, node) for node in route["path"]]
 

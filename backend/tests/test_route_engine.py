@@ -1,6 +1,7 @@
 from app.route_engine.dijkstra import dijkstra_shortest_path
 from app.route_engine.graph import Graph
 from app.services.graph_service import GraphService
+from app.api.v1.routes.rutas import walking_route
 
 
 def test_dijkstra_shortest_path():
@@ -55,3 +56,37 @@ def test_graph_connects_points_to_zonal_route_edges():
     ]
     assert route_connections
     assert all(connection.mode == "sitp" for connection in route_connections)
+
+
+def test_dijkstra_groups_segments_of_same_service_and_counts_real_transfers():
+    graph = Graph()
+    graph.add_connection("A", "B", duration=5, cost=1, distance=1, walking=0, wait=2, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C1")
+    graph.add_connection("B", "C", duration=5, cost=1, distance=1, walking=0, wait=2, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C1")
+    graph.add_connection("C", "D", duration=5, cost=1, distance=1, walking=0, wait=2, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C2")
+
+    result = dijkstra_shortest_path(graph, "A", "D")
+
+    assert result["transfers"] == 1
+    assert len(result["legs"]) == 2
+    assert result["legs"][0]["route_id"] == "C1"
+    assert result["legs"][1]["route_id"] == "C2"
+
+
+def test_dijkstra_can_block_a_service_for_an_alternative():
+    graph = Graph()
+    graph.add_connection("A", "B", duration=5, cost=1, distance=1, walking=0, wait=0, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C1")
+    graph.add_connection("B", "D", duration=5, cost=1, distance=1, walking=0, wait=0, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C1")
+    graph.add_connection("A", "C", duration=8, cost=1, distance=1, walking=0, wait=0, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C2")
+    graph.add_connection("C", "D", duration=8, cost=1, distance=1, walking=0, wait=0, transfers=0, reliability=1, accessibility=1, mode="sitp", route_id="C2")
+
+    result = dijkstra_shortest_path(graph, "A", "D", blocked_route_ids={"C1"})
+
+    assert result["path"] == ["A", "C", "D"]
+
+
+def test_short_distance_can_be_represented_as_walking_route():
+    result = walking_route("A", "B", 0.8)
+
+    assert result["total_cost"] == 0
+    assert result["transfers"] == 0
+    assert result["legs"][0]["modo"] == "caminata"

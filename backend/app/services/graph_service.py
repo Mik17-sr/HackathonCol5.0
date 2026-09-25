@@ -9,14 +9,18 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
-from app.ingestion.normalizar_datos import normalize_point_records, normalize_route_records
+from app.ingestion.normalizar_datos import normalize_route_records, route_vertex_records, simplify_route_records
 from app.integrations.datos_abiertos.gtfs_client import GTFSClient
 from app.route_engine.graph import Graph
 from app.route_engine.graph_builder import GraphBuilder
-from app.services.open_data_service import fetch_estaciones_cable, fetch_paraderos_sitp, fetch_rutas_zonales
+from app.services.open_data_service import fetch_rutas_zonales
 from app.services.mobility_persistence import persist_open_data
 from app.models.parada import Parada
 from app.models.ruta import Ruta
+
+_PERSISTED_ROUTE_SIGNATURE: tuple[str, ...] | None = None
+_GRAPH_CACHE_SIGNATURE: tuple[str, ...] | None = None
+_GRAPH_CACHE: tuple[Graph, dict[str, dict[str, Any]]] | None = None
 
 
 class GraphService:
@@ -38,46 +42,32 @@ class GraphService:
 
         return self._build_fallback_graph()
 
-    async def build_open_data_graph(self, limit: int = 100) -> tuple[Graph, dict[str, dict[str, Any]]]:
+    async def build_open_data_graph(self, limit: int | None = None) -> tuple[Graph, dict[str, dict[str, Any]]]:
         if not self.settings.source_config.enable_external_sources:
             return self._build_local_database_graph()
 
         try:
-            estaciones, paradas, rutas = await asyncio.wait_for(
-                asyncio.gather(
-                    fetch_estaciones_cable(limit=limit),
-                    fetch_paraderos_sitp(limit=limit),
-                    fetch_rutas_zonales(limit=limit),
-                ),
-                timeout=25,
-            )
+            rutas = await asyncio.wait_for(fetch_rutas_zonales(limit=limit), timeout=30)
         except (asyncio.TimeoutError, httpx.HTTPError):
             return self._build_local_database_graph()
-        points = normalize_point_records(
-            estaciones,
-            source_type="estacion",
-            source_crs=self.settings.source_config.source_crs,
-            target_crs=self.settings.source_config.target_crs,
-        )
-        points.extend(
-            normalize_point_records(
-                paradas,
-                source_type="parada",
-                source_crs=self.settings.source_config.source_crs,
-                target_crs=self.settings.source_config.target_crs,
-            )
-        )
         normalized_routes = normalize_route_records(
             rutas,
             source_crs=self.settings.source_config.source_crs,
             target_crs=self.settings.source_config.target_crs,
         )
-        if points or normalized_routes:
+        graph_routes = simplify_route_records(normalized_routes, max_vertices=40)
+        points = route_vertex_records(graph_routes, max_points=200)
+        global _PERSISTED_ROUTE_SIGNATURE, _GRAPH_CACHE_SIGNATURE, _GRAPH_CACHE
+        route_signature = tuple(route["id"] for route in normalized_routes)
+        if route_signature == _GRAPH_CACHE_SIGNATURE and _GRAPH_CACHE is not None:
+            return _GRAPH_CACHE
+        if (points or normalized_routes) and route_signature != _PERSISTED_ROUTE_SIGNATURE:
             persist_open_data(points, normalized_routes)
+            _PERSISTED_ROUTE_SIGNATURE = route_signature
         if len(points) < 2 and not normalized_routes:
             return self._build_fallback_graph(), {}
         node_points = {point["id"]: point for point in points}
-        for route in normalized_routes:
+        for route in graph_routes:
             for path_index, path in enumerate(route["paths"]):
                 for vertex_index, (lat, lng) in enumerate(path):
                     node_points[f"route:{route['id']}:{path_index}:{vertex_index}"] = {
@@ -89,7 +79,9 @@ class GraphService:
                         "mode": route.get("mode", "sitp"),
                         "route_id": route["id"],
                     }
-        return self.build_graph_from_points(points, normalized_routes), node_points
+        _GRAPH_CACHE_SIGNATURE = route_signature
+        _GRAPH_CACHE = self.build_graph_from_points(points, graph_routes), node_points
+        return _GRAPH_CACHE
 
     def _build_local_database_graph(self) -> tuple[Graph, dict[str, dict[str, Any]]]:
         with SessionLocal() as db:
@@ -204,7 +196,7 @@ class GraphService:
         points: list[dict[str, Any]],
         routes: list[dict[str, Any]],
     ) -> None:
-        point_nodes = [(str(point["id"]), point["lat"], point["lng"]) for point in points]
+        point_nodes = [point for point in points]
         for route in routes:
             for path_index, path in enumerate(route["paths"]):
                 route_nodes: list[str] = []
@@ -233,11 +225,21 @@ class GraphService:
                                 route_id=str(route["id"]),
                             )
 
-                for point_id, point_lat, point_lng in point_nodes:
-                    nearest_index = min(
-                        range(len(path)),
-                        key=lambda index: haversine_km(point_lat, point_lng, path[index][0], path[index][1]),
-                    )
+                route_points = [
+                    point
+                    for point in point_nodes
+                    if point.get("route_id") == route["id"] and point.get("path_index") == path_index
+                ]
+                for point in route_points or point_nodes:
+                    point_id = str(point["id"])
+                    point_lat = point["lat"]
+                    point_lng = point["lng"]
+                    nearest_index = point.get("vertex_index")
+                    if nearest_index is None or nearest_index >= len(path):
+                        nearest_index = min(
+                            range(len(path)),
+                            key=lambda index: haversine_km(point_lat, point_lng, path[index][0], path[index][1]),
+                        )
                     distance = haversine_km(point_lat, point_lng, path[nearest_index][0], path[nearest_index][1])
                     if distance > 0.5:
                         continue

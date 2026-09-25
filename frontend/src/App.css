@@ -117,3 +117,7 @@ footer { display: flex; justify-content: space-between; padding: 19px clamp(24px
 :root[data-theme='dark'] .news-card { box-shadow: none; background: #1a2a20; }.news-card, .news-filters button, .news-heading, .news-card-body { transition: background-color .3s, border-color .3s, color .3s; }
 @media (max-width: 850px) { .news-grid { grid-template-columns: repeat(2, 1fr); }.news-card:first-child { grid-row: auto; grid-column: span 2; }.news-card:first-child .news-image-wrap { height: 260px; } }
 @media (max-width: 540px) { .local-news { margin-top: 45px; padding-top: 26px; }.news-heading { display: block; }.news-live { display: inline-flex; margin-top: 12px; }.news-grid { grid-template-columns: 1fr; }.news-card:first-child { grid-column: auto; }.news-card:first-child .news-image-wrap, .news-image-wrap { height: 195px; }.news-card:first-child h3 { font-size: 18px; } }
+.route-services { display: flex; flex-wrap: wrap; gap: 4px; }
+.route-services b { padding: 3px 5px; border: 1px solid #c3dc9e; border-radius: 5px; color: #43652c; background: #eff9df; font-family: var(--mono); font-size: 8px; white-space: nowrap; }
+.route-options-note { color: #567637 !important; font-weight: 700; }
+:root[data-theme='dark'] .route-services b { border-color: #557442; color: #d8efb7; background: #263d29; }

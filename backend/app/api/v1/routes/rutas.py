@@ -1,38 +1,58 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Query
 
-from app.core.config import get_settings
-from app.core.database import SessionLocal
-from app.models.parada import Parada
-from app.repositories.ruta_repository import RutaRepository
 from app.route_engine.dijkstra import dijkstra_shortest_path
 from app.schemas.ruta import RutaCoordenadasRequest
-from app.services.graph_service import GraphService
+from app.services.graph_service import GraphService, haversine_km
 from app.ingestion.normalizar_datos import normalize_route_records
 from app.services.open_data_service import fetch_rutas_zonales
 
 router = APIRouter(prefix="/api/v1", tags=["rutas"])
+WALKING_DISTANCE_LIMIT_KM = 1.2
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def service_sequence(route: dict[str, object]) -> list[str]:
+    services: list[str] = []
+    for leg in route.get("legs", []):
+        route_id = leg.get("route_id")
+        if route_id and route_id not in services:
+            services.append(str(route_id))
+    return services
+
+
+def walking_route(source: str, target: str, distance: float) -> dict[str, object]:
+    duration = max(1, round(distance / 5 * 60))
+    return {
+        "path": [source, target],
+        "total_time": duration,
+        "total_cost": 0.0,
+        "walking": distance,
+        "wait_time": 0,
+        "transfers": 0,
+        "reliability": 0.99,
+        "legs": [{
+            "origen": source,
+            "destino": target,
+            "modo": "caminata",
+            "route_id": None,
+            "tiempo": duration,
+            "distancia": distance,
+        }],
+    }
 
 
 @router.get("/rutas")
-async def listar_rutas(db: Session = Depends(get_db)) -> list[dict[str, object]]:
-    rutas = RutaRepository(db).list_all()
+async def listar_rutas() -> list[dict[str, object]]:
+    rutas = normalize_route_records(await fetch_rutas_zonales(limit=None))
     return [
         {
-            "id": ruta.id,
-            "codigo": ruta.codigo,
-            "nombre": ruta.nombre,
-            "tipo": ruta.tipo,
-            "descripcion": ruta.descripcion,
-            "distancia_km": ruta.distancia_km,
+            "id": ruta["id"],
+            "codigo": ruta["id"],
+            "nombre": ruta["name"],
+            "tipo": ruta["mode"],
+            "descripcion": ruta["raw"].get("orig_ruta"),
+            "distancia_km": ruta["raw"].get("long_ruta"),
+            "horarios": ruta["schedule"],
+            "atributos": ruta["raw"],
         }
         for ruta in rutas
     ]
@@ -58,10 +78,51 @@ async def calcular_ruta(request: RutaCoordenadasRequest) -> dict[str, object]:
 
     origin = graph_service.nearest_point(points, request.origen.lat, request.origen.lng)
     destination = graph_service.nearest_point(points, request.destino.lat, request.destino.lng)
-    try:
-        route = dijkstra_shortest_path(graph, origin, destination)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    point_distance = haversine_km(
+        points[origin]["lat"], points[origin]["lng"],
+        points[destination]["lat"], points[destination]["lng"],
+    )
+    if point_distance <= WALKING_DISTANCE_LIMIT_KM:
+        route = walking_route(origin, destination, point_distance)
+    else:
+        try:
+            route = dijkstra_shortest_path(graph, origin, destination)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    alternatives: list[dict[str, object]] = [route]
+    primary_services = service_sequence(route)
+    block_sets: list[set[str]] = []
+    if primary_services:
+        block_sets.extend({service_id} for service_id in (primary_services[0], primary_services[-1]))
+        if len(primary_services) > 1:
+            block_sets.append(set(primary_services))
+    block_sets.extend(
+        {str(connection.route_id)}
+        for connections in graph.adjacency.values()
+        for connection in connections
+        if connection.route_id and {str(connection.route_id)} not in block_sets
+    )
+    for blocked_services in block_sets:
+        if len(alternatives) >= 3:
+            break
+        try:
+            candidate = dijkstra_shortest_path(
+                graph,
+                origin,
+                destination,
+                blocked_route_ids=blocked_services,
+            )
+        except ValueError:
+            continue
+        if all(candidate["path"] != item["path"] for item in alternatives):
+            alternatives.append(candidate)
+
+    service_groups = []
+    for position in range(2):
+        options = sorted({service_sequence(candidate)[position] for candidate in alternatives if len(service_sequence(candidate)) > position})
+        if len(options) > 1:
+            service_groups.append({"posicion": position, "opciones": options})
 
     return {
         "status": "success",
@@ -76,36 +137,23 @@ async def calcular_ruta(request: RutaCoordenadasRequest) -> dict[str, object]:
             ],
         },
         "nodos": [points[node_id] for node_id in route["path"]],
+        "alternativas": [
+            {
+                **candidate,
+                "coordinates": [
+                    {"lat": points[node_id]["lat"], "lng": points[node_id]["lng"]}
+                    for node_id in candidate["path"]
+                    if node_id in points
+                ],
+            }
+            for candidate in alternatives
+        ],
+        "grupos_servicios": service_groups,
     }
 
 
 @router.get("/rutas/zonales")
 async def listar_rutas_zonales(limit: int | None = Query(default=None, ge=1)) -> dict[str, object]:
-    if not get_settings().source_config.enable_external_sources:
-        with SessionLocal() as db:
-            routes = RutaRepository(db).list_all()
-            if limit:
-                routes = routes[:limit]
-            points = (
-                db.query(Parada)
-                .filter(Parada.activo.is_(True))
-                .order_by(Parada.lat, Parada.lng)
-                .all()
-            )
-        path = [[point.lat, point.lng] for point in points]
-        data = [
-            {
-                "id": route.codigo,
-                "codigo": route.codigo,
-                "nombre": route.nombre,
-                "modo": route.tipo or "sitp",
-                "paths": [path] if len(path) >= 2 else [],
-            }
-            for route in routes
-            if len(path) >= 2
-        ]
-        return {"status": "local", "count": len(data), "data": data}
-
     records = await fetch_rutas_zonales(limit=limit)
     routes = normalize_route_records(records)
     return {
@@ -117,6 +165,8 @@ async def listar_rutas_zonales(limit: int | None = Query(default=None, ge=1)) ->
                 "nombre": route["name"],
                 "modo": route["mode"],
                 "paths": route["paths"],
+                "horarios": route["schedule"],
+                "atributos": route["raw"],
             }
             for route in routes
         ],

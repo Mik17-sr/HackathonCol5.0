@@ -1,32 +1,24 @@
 from fastapi import APIRouter
-from sqlalchemy.orm import Session
-from fastapi import Depends
-
-from app.core.database import SessionLocal
-from app.models.horario import Horario
-from app.repositories.horario_repository import HorarioRepository
+from app.ingestion.normalizar_datos import normalize_route_records
+from app.services.open_data_service import fetch_rutas_zonales
 
 router = APIRouter(prefix="/api/v1", tags=["horarios"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 @router.get("/horarios")
-async def listar_horarios(db: Session = Depends(get_db)) -> list[dict[str, object]]:
-    items = HorarioRepository(db).list_all()
-    return [
-        {
-            "id": horario.id,
-            "ruta_id": horario.ruta_id,
-            "dia_semana": horario.dia_semana,
-            "hora": horario.hora,
-            "frecuencia_min": horario.frecuencia_min,
-        }
-        for horario in items
-    ]
+async def listar_horarios() -> list[dict[str, object]]:
+    routes = normalize_route_records(await fetch_rutas_zonales(limit=None))
+    horarios: list[dict[str, object]] = []
+    for route in routes:
+        for tipo, hora in route["schedule"].items():
+            horarios.append(
+                {
+                    "id": f"{route['id']}:{tipo}",
+                    "ruta_id": route["id"],
+                    "dia_semana": tipo,
+                    "hora": hora,
+                    "frecuencia_min": route.get("frequency_min"),
+                    "atributos": route["raw"],
+                }
+            )
+    return horarios

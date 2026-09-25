@@ -1,15 +1,9 @@
-import asyncio
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.repositories.fuente_repository import FuenteRepository
-from app.services.open_data_service import (
-    fetch_estaciones_cable,
-    fetch_paraderos_sitp,
-    fetch_rutas_zonales,
-)
+from app.services.open_data_service import SITP_ROUTES_URL, fetch_rutas_zonales
 
 router = APIRouter(prefix="/api/v1", tags=["fuentes"])
 
@@ -39,17 +33,10 @@ async def listar_fuentes(db: Session = Depends(get_db)) -> list[dict[str, object
 
 @router.get("/fuentes/estado")
 async def estado_fuentes() -> list[dict[str, object]]:
-    resultados = await asyncio.gather(
-        fetch_estaciones_cable(limit=1),
-        fetch_paraderos_sitp(limit=1),
-        fetch_rutas_zonales(limit=1),
-    )
-    nombres = ["estaciones_cable", "paraderos_sitp", "rutas_zonales"]
-    return [
-        {
-            "fuente": nombre,
-            "disponible": bool(records),
-            "registros_muestra": len(records),
-        }
-        for nombre, records in zip(nombres, resultados)
-    ]
+    records = await fetch_rutas_zonales(limit=1)
+    return [{
+        "fuente": "rutas_sitp_arcgis_featureserver_15",
+        "url": SITP_ROUTES_URL,
+        "disponible": bool(records),
+        "registros_muestra": len(records),
+    }]

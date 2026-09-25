@@ -111,7 +111,16 @@ def normalize_route_records(
     normalized: list[dict[str, Any]] = []
     for index, record in enumerate(records):
         geometry = record.get("geometry") or {}
-        paths = geometry.get("paths", []) if isinstance(geometry, dict) else []
+        paths: list[Any] = []
+        if isinstance(geometry, dict):
+            geometry_type = geometry.get("type")
+            coordinates = geometry.get("coordinates", [])
+            if geometry_type == "LineString":
+                paths = [coordinates]
+            elif geometry_type == "MultiLineString":
+                paths = coordinates
+            else:
+                paths = geometry.get("paths", [])
         valid_paths: list[list[tuple[float, float]]] = []
         for path in paths:
             valid_path: list[tuple[float, float]] = []
@@ -133,8 +142,8 @@ def normalize_route_records(
 
         if not valid_paths:
             continue
-        route_id = _first_value(record, "codigo_ruta", "route_id", "servicio", "codigo", "objectid")
-        name = _first_value(record, "nombre", "name", "servicio", "ruta")
+        route_id = _first_value(record, "cod_ruta", "codigo_ruta", "route_id", "servicio", "codigo", "objectid")
+        name = _first_value(record, "nom_ruta", "nombre", "name", "servicio", "ruta")
         frequency = _number(_first_value(record, "frecuencia_min", "frecuencia", "headway", "intervalo"))
         start_time = _first_value(record, "hora_inicio", "inicio", "start_time")
         end_time = _first_value(record, "hora_fin", "fin", "end_time")
@@ -146,6 +155,11 @@ def normalize_route_records(
                 "frequency_min": int(frequency) if frequency is not None else None,
                 "start_time": str(start_time) if start_time else None,
                 "end_time": str(end_time) if end_time else None,
+                "schedule": {
+                    "habil": _first_value(record, "hor_habil"),
+                    "sabado": _first_value(record, "hor_sab"),
+                    "festivo": _first_value(record, "hor_fest"),
+                },
                 "paths": valid_paths,
                 "raw": record,
             }
@@ -155,3 +169,55 @@ def normalize_route_records(
 
 def normalize_search_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip().casefold())
+
+
+def route_vertex_records(
+    routes: list[dict[str, Any]],
+    max_points: int | None = None,
+) -> list[dict[str, Any]]:
+    """Deriva puntos de mapa únicamente de los vértices de las rutas oficiales."""
+    points: list[dict[str, Any]] = []
+    seen: set[tuple[float, float]] = set()
+    for route in routes:
+        for path_index, path in enumerate(route["paths"]):
+            for vertex_index, (lat, lng) in enumerate(path):
+                coordinate = (round(lat, 6), round(lng, 6))
+                if coordinate in seen:
+                    continue
+                seen.add(coordinate)
+                points.append(
+                    {
+                        "id": f"route-point:{route['id']}:{path_index}:{vertex_index}",
+                        "name": route["name"],
+                        "source_type": "punto_ruta",
+                        "lat": lat,
+                        "lng": lng,
+                        "mode": route.get("mode", "sitp"),
+                        "status": "normal",
+                        "route_id": route["id"],
+                        "path_index": path_index,
+                        "vertex_index": vertex_index,
+                        "raw": route.get("raw", {}),
+                    }
+                )
+                if max_points is not None and len(points) >= max_points:
+                    return points
+    return points
+
+
+def simplify_route_records(
+    routes: list[dict[str, Any]],
+    max_vertices: int = 80,
+) -> list[dict[str, Any]]:
+    """Reduce vértices para el grafo sin modificar las geometrías publicadas."""
+    simplified: list[dict[str, Any]] = []
+    for route in routes:
+        paths: list[list[tuple[float, float]]] = []
+        for path in route["paths"]:
+            if len(path) <= max_vertices:
+                paths.append(path)
+                continue
+            indexes = [round(index * (len(path) - 1) / (max_vertices - 1)) for index in range(max_vertices)]
+            paths.append([path[index] for index in indexes])
+        simplified.append({**route, "paths": paths})
+    return simplified

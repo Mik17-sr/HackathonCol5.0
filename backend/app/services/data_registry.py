@@ -15,29 +15,11 @@ class DataRegistry:
     """Registro central de fuentes de datos para facilitar la integración de datos abiertos."""
 
     SOURCES = {
-        "gtfs_sitp": DataSourceDescriptor(
-            name="gtfs_sitp",
-            provider="gtfs",
-            description="GTFS del Sistema Integrado de Transporte Público de Bogotá",
+        "rutas_sitp_arcgis": DataSourceDescriptor(
+            name="rutas_sitp_arcgis",
+            provider="arcgis",
+            description="FeatureServer 15 de planificación SITP: rutas, geometrías y horarios",
             enabled=True,
-        ),
-        "transmilenio": DataSourceDescriptor(
-            name="transmilenio",
-            provider="api",
-            description="Información operativa y de estaciones de TransMilenio",
-            enabled=False,
-        ),
-        "transmicable": DataSourceDescriptor(
-            name="transmicable",
-            provider="api",
-            description="Datos de TransMiCable y incidencias",
-            enabled=False,
-        ),
-        "datos_abiertos_bogota": DataSourceDescriptor(
-            name="datos_abiertos_bogota",
-            provider="api",
-            description="Catálogo de datos abiertos de movilidad del distrito",
-            enabled=False,
         ),
     }
 

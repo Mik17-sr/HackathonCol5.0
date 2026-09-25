@@ -17,28 +17,10 @@ class DatasetLoader:
     def ensure_default_sources(self) -> None:
         default_sources = [
             {
-                "nombre": "gtfs_sitp",
-                "tipo": "gtfs",
-                "url": "https://datosabiertos.bogota.gov.co/",
-                "descripcion": "Fuente GTFS del SITP / datos abiertos de Bogotá",
-            },
-            {
-                "nombre": "estaciones_cable",
-                "tipo": "ckan",
-                "url": "https://datosabiertos.bogota.gov.co/dataset/estaciones-cable",
-                "descripcion": "Estaciones de TransMiCable",
-            },
-            {
-                "nombre": "paraderos_sitp",
-                "tipo": "ckan",
-                "url": "https://datosabiertos.bogota.gov.co/dataset/paraderos-zonales-del-sitp",
-                "descripcion": "Paraderos del SITP",
-            },
-            {
-                "nombre": "rutas_zonales",
+                "nombre": "rutas_sitp_arcgis",
                 "tipo": "arcgis",
-                "url": "https://datosabiertos.bogota.gov.co/dataset/servicios-rutas-troncales-y-zonales",
-                "descripcion": "Geometrías y servicios de rutas zonales",
+                "url": "https://gis.transmilenio.gov.co/arcgis/rest/services/ConsultaSubgerenciaPlanificacionSITP/Consulta_Planificacion_SITP/FeatureServer/15/query",
+                "descripcion": "Fuente única de rutas SITP, geometrías y horarios operativos",
             },
         ]
 
@@ -46,6 +28,11 @@ class DatasetLoader:
             exists = self.db.query(FuenteDatos).filter(FuenteDatos.nombre == item["nombre"]).first()
             if not exists:
                 self.db.add(FuenteDatos(**item))
+
+        canonical_name = default_sources[0]["nombre"]
+        self.db.query(FuenteDatos).filter(FuenteDatos.nombre != canonical_name).update(
+            {FuenteDatos.activo: False}, synchronize_session=False
+        )
 
         self.db.commit()
 
